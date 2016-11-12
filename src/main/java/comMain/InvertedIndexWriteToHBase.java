@@ -3,18 +3,21 @@ package comMain;
  * Created by liyize on 16-11-2.
  */
 import java.io.IOException;
-import java.util.StringTokenizer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.StringTokenizer;
 
-import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.client.HTableInterface;
-import org.apache.hadoop.hbase.client.HTablePool;
-import org.apache.hadoop.hbase.client.Put;
-import org.apache.hadoop.hbase.util.Bytes;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.client.HTableInterface;
+import org.apache.hadoop.hbase.client.HTablePool;
+import org.apache.hadoop.hbase.client.Put;
+import org.apache.hadoop.hbase.util.*;
+
+
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
@@ -27,6 +30,61 @@ import org.apache.hadoop.mapreduce.lib.partition.HashPartitioner;
 import org.apache.hadoop.util.GenericOptionsParser;
 
 public class InvertedIndexWriteToHBase {
+
+
+    private static MyHTable hb;
+    private static List<Put> putList;
+
+    /**
+     * Constructor.
+     *
+     * @throws IOException HBase needs it.
+     */
+    InvertedIndexWriteToHBase() throws IOException
+    {
+
+        System.out.println("yes");
+    }
+
+    public static void main(String[] args) throws Exception {
+        if(args.length != 2){
+            System.out.println("wrong input args");
+            System.exit(-1);
+        }
+
+        hb = new MyHTable();
+        putList = new ArrayList<Put>();
+
+        Configuration conf = new Configuration();
+        String[] otherArgs = new GenericOptionsParser(conf, args).getRemainingArgs();
+        Job job = new Job(conf, "inverted index to hbase:group st14");
+        job.setJarByClass(InvertedIndexWriteToHBase.class);
+        job.setMapperClass(InvertedIndexMapper.class);
+        job.setCombinerClass(SumCombiner.class);
+        job.setReducerClass(InvertedIndexReducer.class);
+        job.setNumReduceTasks(5);//Reduce节点个数为5
+        job.setPartitionerClass(NewPartitioner.class);
+        job.setMapOutputKeyClass(Text.class);
+        job.setMapOutputValueClass(IntWritable.class);
+        job.setOutputKeyClass(Text.class);
+        job.setOutputValueClass(Text.class);
+
+        FileInputFormat.addInputPath(job, new Path(otherArgs[0]));
+
+        FileOutputFormat.setOutputPath(job, new Path(otherArgs[1]));
+
+        if (job.waitForCompletion(true))
+        {
+            hb.insertDataListToTable(putList);
+            hb.writeToFile();
+            hb.cleanup();
+            System.exit(0);
+        }
+        else{
+            System.exit(1);
+        }
+
+    }
     /**
      * Mapper部分
      **/
@@ -112,12 +170,6 @@ public class InvertedIndexWriteToHBase {
         private float average;//temp tocount averager
 
 
-
-
-
-
-
-
         public void reduce(Text key, Iterable<IntWritable> values, Context context) throws IOException, InterruptedException {
             term = key.toString().split("#")[0];//get word
             if (!term.equals(last)) {//word与上次不一样，将上次进行处理并输出
@@ -126,6 +178,10 @@ public class InvertedIndexWriteToHBase {
                     average = (float) countItem / countDoc;//计算平均出现次数
                     context.write(new Text(last), new Text(String.format("%.2f,%s", average, out.toString())));//value部分拼接后输出//("%.2f,%s", f, out.toString())))
                     //context.write(new Text(last), new Text(String.format("%.2f,%s", average)));
+                    //System.out.println(last +" "+String.format("%.2f,%s", average, out.toString()));
+                    Put put = new Put(Bytes.toBytes(last.toString()));
+                    put.addColumn(Bytes.toBytes("averageCounts"), Bytes.toBytes("averageCounts"), Bytes.toBytes(String.valueOf(average)));
+                    putList.add(put);
                     countItem = 0;//初始化计算下一个word
                     countDoc = 0;
                     out = new StringBuilder();
@@ -150,29 +206,12 @@ public class InvertedIndexWriteToHBase {
             average = (float) countItem / countDoc;
             //context.write(new Text(last), new Text(String.format("%.2f,%s", average)));
             context.write(new Text(last), new Text(String.format("%.2f,%s", average, out.toString())));
+            //System.out.println(last +" "+String.format("%.2f,%s", average, out.toString()));
+            Put put = new Put(Bytes.toBytes(last.toString()));
+            put.addColumn(Bytes.toBytes("averageCounts"), Bytes.toBytes("averageCounts"), Bytes.toBytes(String.valueOf(average)));
+            putList.add(put);
         }
     }
 
-    public static void main(String[] args) throws Exception {
-        if(args.length != 2){
-            System.out.println("wrong input args");
-            System.exit(-1);
-        }
-        Configuration conf = new Configuration();
-        String[] otherArgs = new GenericOptionsParser(conf, args).getRemainingArgs();
-        Job job = new Job(conf, "inverted index to hbase:group st14,liyize");
-        job.setJarByClass(InvertedIndexWriteToHBase.class);
-        job.setMapperClass(InvertedIndexMapper.class);
-        job.setCombinerClass(SumCombiner.class);
-        job.setReducerClass(InvertedIndexReducer.class);
-        job.setNumReduceTasks(5);//Reduce节点个数为5
-        job.setPartitionerClass(NewPartitioner.class);
-        job.setMapOutputKeyClass(Text.class);
-        job.setMapOutputValueClass(IntWritable.class);
-        job.setOutputKeyClass(Text.class);
-        job.setOutputValueClass(Text.class);
-        FileInputFormat.addInputPath(job, new Path(otherArgs[0]));
-        FileOutputFormat.setOutputPath(job, new Path(otherArgs[1]));
-        System.exit(job.waitForCompletion(true) ? 0 : 1);
-    }
+
 }
